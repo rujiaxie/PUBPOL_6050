@@ -1,0 +1,229 @@
+---
+title: "PUBPOL6050_ResearchPaper"
+author: "Rujia Xie"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require("data.table")
+require("bit64")
+require("dplyr")
+library(survey)
+library(MASS)
+library(srvyr)
+library(janitor)
+```
+
+```{r}
+#Read in the Primary Data file. Choose only the variables you want to read in in order to save on memory.
+#This code assumes that your working directory is the same directory as the data.
+ds <- c("pu2023.csv")
+pu <- fread(ds, sep = "|", select = c(
+  
+  #Common case identification variables
+  'SSUID','PNUM','MONTHCODE','ERESIDENCEID','ERELRPE','SPANEL','SWAVE',
+  
+  #The base weight
+  'WPFINWGT',
+  
+  #Common demographics variables, including age at time of interview (TAGE)
+  #	and monthly age during the reference period (TAGE_EHC)
+  'ESEX','TAGE', 'ERACE','EORIGIN','EEDUC',
+  
+  #Additional variables for analysis
+  #RFOODR: Recode for the raw food security score that is a count of affirmative responses (0-6).
+  #RFOODS: Recode variable for food security status
+    #1. High or marginal food security
+    #2. Low food security
+    #3. Very low food security
+  #THCYINCPOV: Household income-to-poverty ratio in this calendar year, excluding Type 2 individuals
+  'RSSMC', 'EBORNUS', 'ECITIZEN', 'ENATCIT', 'TIMSTAT', 'TYRENTRY', 'THCYINCPOV', 'RFOODR', 'RFOODS', 'EWORKMORE', 'ETIMELOST', 'ETIMELOST_TP'))
+
+#Make sure all the column names are upper-case
+names(pu) <- toupper(names(pu))
+
+#Preview the data
+head(pu, 20)
+
+#check some means against the validation xls file to help ensure that the data
+#	were read in correctly. Note that the validation xls files do not include all variables.
+mean(pu[["RFOODR"]], na.rm = TRUE)
+
+#Read in the replicate-weight data. This dataset is small enough that most machines
+#	can read the whole file into memory
+dw <- c("rw2023.csv")
+rw <- fread(dw, sep = "|")
+
+#Make sure all the column names are upper-case
+names(rw) <- toupper(names(rw))
+
+#Preview the data
+head(rw, 20)
+
+
+#check some means against the validation xls file to help ensure that the data
+#	were read in correctly. Note that the validation xls files do not include all variables.
+mean(rw[["REPWGT100"]], na.rm = TRUE)
+
+#Merge primary data and replicate weights on SSUID, PNUM, MONTHCODE, SPANEL, and SWAVE
+raw_data <- inner_join(pu, rw, by = c("SSUID","PNUM","MONTHCODE", "SPANEL", "SWAVE"))
+
+
+#preview the merged data
+head(data, 20)
+```
+```{r}
+subset_data <- subset(raw_data, MONTHCODE == 12 & RSSMC != "NA" & EWORKMORE != "NA")
+```
+
+```{r}
+sum(is.na(subset_data))
+```
+
+
+```{r}
+subset_data <- subset_data %>%
+  mutate(across(c(ESEX, ERACE, EORIGIN, EWORKMORE, RSSMC, RFOODS), ~factor(.)))
+
+subset_data <- subset_data %>%
+  rename(Age = TAGE) %>%
+  mutate(
+    Sex = factor(ESEX, levels = c(2, 1), labels = c("Female", "Male")),
+    Education = case_when(
+      EEDUC %in% 31:38 ~ "Less than high school",
+      EEDUC == 39 ~ "High school graduate",
+      EEDUC %in% 40:42 ~ "Some college or associate degree",
+      EEDUC == 43      ~ "Bachelor’s degree",
+      EEDUC >= 44      ~ "Graduate or professional degree"),
+    Education = factor(Education, levels = c("Less than high school","High school graduate", 
+                                             "Some college or associate degree", "Bachelor’s degree", 
+                                             "Graduate or professional degree")),
+    Race_Ethnicity = case_when(
+      EORIGIN == 1 ~ "Hispanic",
+      EORIGIN == 2 & ERACE == 1 ~ "White, non Hispanic",
+      EORIGIN == 2 & ERACE == 2 ~ "Black, non-Hispanic",
+      EORIGIN == 2 & ERACE == 3 ~ "Asian, non-Hispanic",
+      EORIGIN == 2 & ERACE == 4 ~ "Other, non-Hispanic"),
+    Race_Ethnicity = factor(Race_Ethnicity, levels = c("White, non Hispanic", "Hispanic", 
+                                                       "Black, non-Hispanic", "Asian, non-Hispanic", 
+                                                       "Other, non-Hispanic")),
+    Immigrant_Status = case_when(
+      EBORNUS == 1 ~ "Citizen",
+      EBORNUS == 2 & ECITIZEN == 1 ~ "Citizen",
+      EBORNUS == 2 & ECITIZEN == 2 & TIMSTAT == 1 ~ "Permanent Resident",
+      EBORNUS == 2 & ECITIZEN == 2 & TIMSTAT == 2 ~ "Non–LPR"),
+    Immigrant_Status = factor(Immigrant_Status, 
+                                levels = c("Citizen", "Permanent Resident", "Non–LPR")),
+    Couple_Type = factor(RSSMC, levels = c(2,1), labels = c("Opposite-sex", "Same-sex")),
+    Income = case_when(
+      THCYINCPOV < 1 ~ "Below 100%",
+      THCYINCPOV >= 1 & THCYINCPOV < 2 ~ "100% - 200%",
+      THCYINCPOV >=2 & THCYINCPOV < 4 ~ "200% - 400%",
+      THCYINCPOV >= 4 ~ "Above 400%"),
+    Income = factor(Income, levels = c("Below 100%", "100% - 200%", "200% - 400%", "Above 400%"),
+                    ordered = TRUE),
+    Income_S = ifelse(THCYINCPOV < 2, 1, 0),
+    Income_S = factor(Income_S, levels = c(0,1), labels = c("Above 200%", "Below 200%")),
+    Food_Security = factor(RFOODS, levels = c(3,2,1), labels = c("Very low", "Low", "High or marginal"),
+                           ordered = TRUE),
+    Food_Security_S = ifelse(RFOODS %in% c(2,3), 1, 0),
+    Food_Security_S = factor(Food_Security_S, levels = c(0, 1), 
+                             labels = c("Not food insecure", "Food insecure")),
+    Child_Care = factor(EWORKMORE, levels = c(2,1), labels = c("No", "Yes")))
+```
+
+
+
+
+```{r}
+subset_data_svy <- subset_data %>%
+  as_survey_design(weights = WPFINWGT)
+
+subset_data_svy %>%
+  summarize(mean = survey_mean(Age))
+
+subset_data_svy %>%
+  group_by(Sex) %>%
+  summarize(prop = survey_mean())
+
+subset_data_svy %>%
+  group_by(Race_Ethnicity) %>%
+  summarize(prop = survey_mean())
+
+subset_data_svy %>%
+  group_by(Education) %>%
+  summarize(prop = survey_mean())
+
+subset_data_svy %>%
+  group_by(Immigrant_Status) %>%
+  summarize(prop = survey_mean())
+
+subset_data_svy %>%
+  group_by(Couple_Type) %>%
+  summarize(prop = survey_mean())
+
+subset_data_svy %>%
+  group_by(Income) %>%
+  summarize(prop = survey_mean())
+
+subset_data_svy %>%
+  group_by(Food_Security) %>%
+  summarize(prop = survey_mean())
+
+subset_data_svy %>%
+  group_by(Child_Care) %>%
+  summarize(prop = survey_mean())
+```
+
+
+```{r}
+# First, identify the replicate weight columns
+rep_weights <- subset_data %>%
+  select(starts_with("REPWGT")) %>%
+  names()
+
+# Then define the survey design
+sipp_design <- subset_data %>%
+  as_survey_rep(
+    weights = WPFINWGT,
+    repweights = all_of(rep_weights),
+    type = "BRR", # SIPP uses Balanced Repeated Replication
+    combined_weights = TRUE
+  )
+```
+
+
+```{r}
+levels(subset_data$Child_Care)
+levels(subset_data$Food_Security_S)
+levels(subset_data$Income_S)
+```
+
+```{r}
+Income_model <- svyglm(Income_S ~ Race_Ethnicity + Immigrant_Status + Couple_Type + Age + Sex + Education, design = sipp_design, family = quasibinomial())
+summary(Income_model)
+
+FoodSecurity_model <- svyglm(Food_Security_S ~ Race_Ethnicity + Immigrant_Status + Couple_Type + Age + Sex + Education, design = sipp_design, family = quasibinomial())
+summary(FoodSecurity_model)
+
+Childcare_model <- svyglm(Child_Care ~ Race_Ethnicity + Immigrant_Status + Couple_Type + Age + Sex + Education, design = sipp_design, family = quasibinomial())
+summary(Childcare_model)
+```
+
+```{r}
+exp(coef(Income_model))
+exp(confint(Income_model))
+```
+
+```{r}
+exp(coef(FoodSecurity_model))
+exp(confint(FoodSecurity_model))
+```
+
+```{r}
+exp(coef(Childcare_model))
+exp(confint(Childcare_model))
+```
+
