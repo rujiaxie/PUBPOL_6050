@@ -1,7 +1,7 @@
 ---
-title: "PUBPOL6050_ResearchPaper"
+title: "PUBPOL6050_Final Research Paper_Data Analysis"
 author: "Rujia Xie"
-date: "`r Sys.Date()`"
+date: "May 20th, 2025"
 output: html_document
 ---
 
@@ -16,7 +16,7 @@ library(srvyr)
 library(janitor)
 ```
 
-```{r}
+```{r read-raw-files-from-SIPP}
 #Read in the Primary Data file. Choose only the variables you want to read in in order to save on memory.
 #This code assumes that your working directory is the same directory as the data.
 ds <- c("pu2023.csv")
@@ -33,12 +33,12 @@ pu <- fread(ds, sep = "|", select = c(
   'ESEX','TAGE', 'ERACE','EORIGIN','EEDUC',
   
   #Additional variables for analysis
+  #RSSMC: Same-sex married couple recode
+  #EBORNUS, ECITIZEN, ENATCIT, TIMSTAT, TYRENTRY: nativity and citizenship
+  #THCYINCPOV: Household income-to-poverty ratio in this calendar year, excluding Type 2 individuals  
   #RFOODR: Recode for the raw food security score that is a count of affirmative responses (0-6).
   #RFOODS: Recode variable for food security status
-    #1. High or marginal food security
-    #2. Low food security
-    #3. Very low food security
-  #THCYINCPOV: Household income-to-poverty ratio in this calendar year, excluding Type 2 individuals
+  #EWORKMORE: Did child care arrangements prevent reference parent from working or working more during the fall of the reference year?
   'RSSMC', 'EBORNUS', 'ECITIZEN', 'ENATCIT', 'TIMSTAT', 'TYRENTRY', 'THCYINCPOV', 'RFOODR', 'RFOODS', 'EWORKMORE', 'ETIMELOST', 'ETIMELOST_TP'))
 
 #Make sure all the column names are upper-case
@@ -74,16 +74,16 @@ raw_data <- inner_join(pu, rw, by = c("SSUID","PNUM","MONTHCODE", "SPANEL", "SWA
 #preview the merged data
 head(data, 20)
 ```
-```{r}
+```{r subset-data}
 subset_data <- subset(raw_data, MONTHCODE == 12 & RSSMC != "NA" & EWORKMORE != "NA")
 ```
 
-```{r}
+```{r check-nas}
 sum(is.na(subset_data))
 ```
 
 
-```{r}
+```{r make-own-variables}
 subset_data <- subset_data %>%
   mutate(across(c(ESEX, ERACE, EORIGIN, EWORKMORE, RSSMC, RFOODS), ~factor(.)))
 
@@ -137,7 +137,7 @@ subset_data <- subset_data %>%
 
 
 
-```{r}
+```{r apply-weights-and-summarize-statistics}
 subset_data_svy <- subset_data %>%
   as_survey_design(weights = WPFINWGT)
 
@@ -178,7 +178,7 @@ subset_data_svy %>%
 ```
 
 
-```{r}
+```{r conduct-weighted-regression}
 # First, identify the replicate weight columns
 rep_weights <- subset_data %>%
   select(starts_with("REPWGT")) %>%
@@ -195,13 +195,13 @@ sipp_design <- subset_data %>%
 ```
 
 
-```{r}
+```{r check-levels-of-outcomes}
 levels(subset_data$Child_Care)
 levels(subset_data$Food_Security_S)
 levels(subset_data$Income_S)
 ```
 
-```{r}
+```{r conduct-weighted-regression}
 Income_model <- svyglm(Income_S ~ Race_Ethnicity + Immigrant_Status + Couple_Type + Age + Sex + Education, design = sipp_design, family = quasibinomial())
 summary(Income_model)
 
@@ -212,17 +212,17 @@ Childcare_model <- svyglm(Child_Care ~ Race_Ethnicity + Immigrant_Status + Coupl
 summary(Childcare_model)
 ```
 
-```{r}
+```{r model-1-results}
 exp(coef(Income_model))
 exp(confint(Income_model))
 ```
 
-```{r}
+```{r model-2-results}
 exp(coef(FoodSecurity_model))
 exp(confint(FoodSecurity_model))
 ```
 
-```{r}
+```{r model-3-results}
 exp(coef(Childcare_model))
 exp(confint(Childcare_model))
 ```
